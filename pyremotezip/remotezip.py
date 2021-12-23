@@ -82,6 +82,15 @@ class RemoteZip(object):
         self.raw_bytes = handle.read()
         self.directory_end = self.raw_bytes.find(b"\x50\x4b\x05\x06")
 
+    @staticmethod
+    def __dos_date_to_date_tuple(date, time):
+        day = date & 0b11111
+        month = (date >> 5) & 0b1111
+        year = 1980 + (date >> 9)
+        second = (time & 0b11111) << 1
+        minute = (time >> 5) & 0b111111
+        hour = time >> 11
+        return (year, month, day, hour, minute, second)
 
     def getTableOfContents(self):
         """
@@ -117,13 +126,22 @@ class RemoteZip(object):
 
                 # check if this is the index file
                 filestart = unpack("I", self.raw_bytes[current_start + 42: current_start + 42 + 4])[0]
+                flags = unpack("H", self.raw_bytes[current_start + 8: current_start + 8 + 2])[0]
+                compressionmethod = unpack("H", self.raw_bytes[current_start + 10: current_start + 10 + 2])[0]
+                mtime = unpack("H", self.raw_bytes[current_start + 12: current_start + 12 + 2])[0]
+                mdate = unpack("H", self.raw_bytes[current_start + 14: current_start + 14 + 2])[0]
+                crc32 = unpack("I", self.raw_bytes[current_start + 16: current_start + 16 + 4])[0]
                 compressedsize = unpack("I", self.raw_bytes[current_start + 20: current_start + 20 + 4])[0]
                 uncompressedsize = unpack("I", self.raw_bytes[current_start + 24: current_start + 24 + 4])[0]
                 tableItem = {
                     'filename': filename,
                     'compressedsize': compressedsize,
                     'uncompressedsize': uncompressedsize,
-                    'filestart': filestart
+                    'filestart': filestart,
+                    'flags': flags,
+                    'compressionmethod': compressionmethod,
+                    'crc32': crc32,
+                    'modifieddate': self.__dos_date_to_date_tuple(mdate, mtime),
                 }
                 tableOfContents.append(tableItem)
 

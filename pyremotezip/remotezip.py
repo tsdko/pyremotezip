@@ -1,7 +1,7 @@
-import urllib2
+import urllib.request
 import zlib
 
-from urllib2 import HTTPError
+from urllib.error import HTTPError
 from struct import unpack
 
 
@@ -27,14 +27,14 @@ class RemoteZip(object):
 
     def __file_exists(self):
         # check if file exists
-        headRequest = urllib2.Request(self.zipURI)
+        headRequest = urllib.request.Request(self.zipURI)
         headRequest.get_method = lambda: 'HEAD'
         try:
-            response = urllib2.urlopen(headRequest)
-            self.filesize = int(response.info().getheader('Content-Length'))
+            response = urllib.request.urlopen(headRequest)
+            self.filesize = int(response.getheader('Content-Length'))
             return True
         except HTTPError as e:
-            print '%s' % e
+            print('%s' % e)
             return False
 
     def getDirectorySize(self):
@@ -42,11 +42,11 @@ class RemoteZip(object):
             raise FileNotFoundException()
 
         # now request bytes from that size minus a 64kb max zip directory length
-        self.request = urllib2.Request(self.zipURI)
+        self.request = urllib.request.Request(self.zipURI)
         self.start = self.filesize - (65536)
         self.end = self.filesize - 1
         self.request.headers['Range'] = "bytes=%s-%s" % (self.start, self.end)
-        handle = urllib2.urlopen(self.request)
+        handle = urllib.request.urlopen(self.request)
 
         # make sure the response is ranged
         return_range = handle.headers.get('Content-Range')
@@ -58,7 +58,7 @@ class RemoteZip(object):
 
         # now find the end-of-directory: 06054b50
         # we're on little endian maybe
-        self.directory_end = self.raw_bytes.find("\x50\x4b\x05\x06")
+        self.directory_end = self.raw_bytes.find(b"\x50\x4b\x05\x06")
         if self.directory_end < 0:
             raise Exception("Could not find end of directory")
 
@@ -71,7 +71,7 @@ class RemoteZip(object):
         self.start = self.filesize - self.directory_size
         self.end = self.filesize - 1
         self.request.headers['Range'] = "bytes=%s-%s" % (self.start, self.end)
-        handle = urllib2.urlopen(self.request)
+        handle = urllib.request.urlopen(self.request)
 
         # make sure the response is ranged
         return_range = handle.headers.get('Content-Range')
@@ -80,7 +80,7 @@ class RemoteZip(object):
 
         # got here? we're fine, read the contents
         self.raw_bytes = handle.read()
-        self.directory_end = self.raw_bytes.find("\x50\x4b\x05\x06")
+        self.directory_end = self.raw_bytes.find(b"\x50\x4b\x05\x06")
 
 
     def getTableOfContents(self):
@@ -149,11 +149,11 @@ class RemoteZip(object):
 
         # got here? need to fetch the file size
         metaheadroom = 1024  # should be enough
-        request = urllib2.Request(self.zipURI)
+        request = urllib.request.Request(self.zipURI)
         start = fileRecord['filestart']
         end = fileRecord['filestart'] + fileRecord['compressedsize'] + metaheadroom
         request.headers['Range'] = "bytes=%s-%s" % (start, end)
-        handle = urllib2.urlopen(request)
+        handle = urllib.request.urlopen(request)
 
         # make sure the response is ranged
         return_range = handle.headers.get('Content-Range')
@@ -184,12 +184,7 @@ class RemoteZip(object):
           return raw_zip_data
 
         dec = zlib.decompressobj(-zlib.MAX_WBITS)
-        for chunk in raw_zip_data:
-            rv = dec.decompress(chunk)
-            if rv:
-                uncompressed_data = uncompressed_data + rv
-
-        return uncompressed_data
+        return dec.decompress(raw_zip_data)
 
 
 class FileNotFoundException(Exception):

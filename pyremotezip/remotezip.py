@@ -2,7 +2,7 @@ import urllib.request
 import zlib
 
 from urllib.error import HTTPError
-from struct import unpack
+from struct import unpack, unpack_from
 
 
 class RemoteZip(object):
@@ -17,70 +17,44 @@ class RemoteZip(object):
         self.filesize = None
         self.zipURI = zipURI
         self.tableOfContents = None
-        self.request = None
         self.start = None
         self.end = None
-        self.directory_end = None
         self.raw_bytes = None
-        self.directory_size = None
 
 
-    def __file_exists(self):
-        # check if file exists
+    def _populate_filesize(self):
         headRequest = urllib.request.Request(self.zipURI)
         headRequest.get_method = lambda: 'HEAD'
-        try:
-            response = urllib.request.urlopen(headRequest)
-            self.filesize = int(response.getheader('Content-Length'))
-            return True
-        except HTTPError as e:
-            print('%s' % e)
-            return False
 
-    def getDirectorySize(self):
-        if not self.__file_exists():
-            raise FileNotFoundException()
+        response = urllib.request.urlopen(headRequest)
+        self.filesize = int(response.getheader('Content-Length'))
 
-        # now request bytes from that size minus a 64kb max zip directory length
-        self.request = urllib.request.Request(self.zipURI)
-        self.start = self.filesize - (65536)
-        self.end = self.filesize - 1
-        self.request.headers['Range'] = "bytes=%s-%s" % (self.start, self.end)
-        handle = urllib.request.urlopen(self.request)
+    def _request_range(self, uri, start, end):
+        request = urllib.request.Request(self.zipURI)
+        request.headers['Range'] = "bytes=%s-%s" % (start, end)
+        handle = urllib.request.urlopen(request)
 
         # make sure the response is ranged
         return_range = handle.headers.get('Content-Range')
-        if return_range != "bytes %d-%d/%s" % (self.start, self.end, self.filesize):
+        if return_range != "bytes %d-%d/%s" % (start, end, self.filesize):
             raise Exception("Ranged requests are not supported for this URI")
 
-        # got here? we're fine, read the contents
+        return handle
+
+    def getDirectoryOffsets(self):
+        # now request bytes from that size minus a 64kb max zip directory length
+        handle = self._request_range(self.zipURI, self.start, self.end)
         self.raw_bytes = handle.read()
 
         # now find the end-of-directory: 06054b50
         # we're on little endian maybe
-        self.directory_end = self.raw_bytes.find(b"\x50\x4b\x05\x06")
-        if self.directory_end < 0:
+        directory_end = self.raw_bytes.find(b"\x50\x4b\x05\x06")
+        if directory_end < 0:
             raise Exception("Could not find end of directory")
 
-        # now find the size of the directory: offset 12, 4 bytes
-        self.directory_size = unpack("i", self.raw_bytes[self.directory_end+12:self.directory_end+16])[0]
+        directory_size, directory_start = unpack_from("II", self.raw_bytes[directory_end+12:])
 
-        return self.directory_size
-
-    def requestContentDirectory(self):
-        self.start = self.filesize - self.directory_size
-        self.end = self.filesize - 1
-        self.request.headers['Range'] = "bytes=%s-%s" % (self.start, self.end)
-        handle = urllib.request.urlopen(self.request)
-
-        # make sure the response is ranged
-        return_range = handle.headers.get('Content-Range')
-        if return_range != "bytes %d-%d/%s" % (self.start, self.end, self.filesize):
-            raise Exception("Ranged requests are not supported for this URI")
-
-        # got here? we're fine, read the contents
-        self.raw_bytes = handle.read()
-        self.directory_end = self.raw_bytes.find(b"\x50\x4b\x05\x06")
+        return directory_size, directory_start
 
     @staticmethod
     def __dos_date_to_date_tuple(date, time):
@@ -99,17 +73,17 @@ class RemoteZip(object):
         and exception. It will also throw an exception if the TOC cannot be found.
         """
 
-        self.directory_size = self.getDirectorySize()
-        if self.directory_size > 65536:
-            self.directory_size += 2
-            self.requestContentDirectory()
+        self._populate_filesize()
+        self.start = self.filesize - (65536)
+        self.end = self.filesize - 1
 
-
-        # and find the offset from start of file where it can be found
-        directory_start = unpack("i", self.raw_bytes[self.directory_end + 16: self.directory_end + 20])[0]
+        directory_size, directory_start = self.getDirectoryOffsets()
+        if directory_start < self.start:
+            handle = self._request_range(self.zipURI, directory_start, self.start-1)
+            self.raw_bytes = handle.read() + self.raw_bytes
+            self.start = directory_start
 
         # find the data in the raw_bytes
-        self.raw_bytes = self.raw_bytes
         current_start = directory_start - self.start
         filestart = 0
         compressedsize = 0

@@ -141,17 +141,9 @@ class RemoteZip(object):
 
         # got here? need to fetch the file size
         metaheadroom = 1024  # should be enough
-        request = urllib.request.Request(self.zipURI)
         start = fileRecord['filestart']
         end = fileRecord['filestart'] + fileRecord['compressedsize'] + metaheadroom
-        request.headers['Range'] = "bytes=%s-%s" % (start, end)
-        handle = urllib.request.urlopen(request)
-
-        # make sure the response is ranged
-        return_range = handle.headers.get('Content-Range')
-        if return_range != "bytes %d-%d/%s" % (start, end, self.filesize):
-            raise Exception("Ranged requests are not supported for this URI")
-
+        handle = self._request_range(self.zipURI, start, end)
         filedata = handle.read()
 
         # find start of raw file data

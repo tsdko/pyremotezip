@@ -14,20 +14,15 @@ class RemoteZip(object):
         zipURI should be an HTTP URL hosted on a server that supports ranged requests.
         The init function will determine if the file exists and raise a urllib2 exception if not.
         """
-        self.filesize = None
         self.zipURI = zipURI
         self.tableOfContents = None
-        self.start = None
-        self.end = None
-        self.raw_bytes = None
 
-
-    def _populate_filesize(self):
+    def _get_filesize(self):
         headRequest = urllib.request.Request(self.zipURI)
         headRequest.get_method = lambda: 'HEAD'
 
         response = urllib.request.urlopen(headRequest)
-        self.filesize = int(response.getheader('Content-Length'))
+        return int(response.getheader('Content-Length'))
 
     def _request_range(self, uri, start, end):
         request = urllib.request.Request(self.zipURI)
@@ -36,25 +31,10 @@ class RemoteZip(object):
 
         # make sure the response is ranged
         return_range = handle.headers.get('Content-Range')
-        if return_range != "bytes %d-%d/%s" % (start, end, self.filesize):
+        if not return_range.startswith("bytes %d-%d/" % (start, end)):
             raise Exception("Ranged requests are not supported for this URI")
 
         return handle
-
-    def getDirectoryOffsets(self):
-        # now request bytes from that size minus a 64kb max zip directory length
-        handle = self._request_range(self.zipURI, self.start, self.end)
-        self.raw_bytes = handle.read()
-
-        # now find the end-of-directory: 06054b50
-        # we're on little endian maybe
-        directory_end = self.raw_bytes.find(b"\x50\x4b\x05\x06")
-        if directory_end < 0:
-            raise Exception("Could not find end of directory")
-
-        directory_size, directory_start = unpack_from("II", self.raw_bytes[directory_end+12:])
-
-        return directory_size, directory_start
 
     @staticmethod
     def __dos_date_to_date_tuple(date, time):
@@ -73,18 +53,28 @@ class RemoteZip(object):
         and exception. It will also throw an exception if the TOC cannot be found.
         """
 
-        self._populate_filesize()
-        self.start = self.filesize - (65536)
-        self.end = self.filesize - 1
+        filesize = self._get_filesize()
+        bytes_start = filesize - (65536)
+        bytes_end = filesize - 1
 
-        directory_size, directory_start = self.getDirectoryOffsets()
-        if directory_start < self.start:
-            handle = self._request_range(self.zipURI, directory_start, self.start-1)
-            self.raw_bytes = handle.read() + self.raw_bytes
-            self.start = directory_start
+        # now request bytes from that size minus a 64kb max zip directory length
+        handle = self._request_range(self.zipURI, bytes_start, bytes_end)
+        raw_bytes = handle.read()
+
+        # now find the end-of-directory: 06054b50
+        # we're on little endian maybe
+        directory_end = raw_bytes.find(b"\x50\x4b\x05\x06")
+        if directory_end < 0:
+            raise Exception("Could not find end of directory")
+
+        directory_size, directory_start = unpack_from("II", raw_bytes[directory_end+12:])
+        if directory_start < bytes_start:
+            handle = self._request_range(self.zipURI, directory_start, bytes_start-1)
+            raw_bytes = handle.read() + raw_bytes
+            bytes_start = directory_start
 
         # find the data in the raw_bytes
-        current_start = directory_start - self.start
+        current_start = directory_start - bytes_start
         filestart = 0
         compressedsize = 0
         tableOfContents = []
@@ -92,21 +82,21 @@ class RemoteZip(object):
         try:
             while True:
                 # get file name size (n), extra len (m) and comm len (k)
-                zip_n = unpack("H", self.raw_bytes[current_start + 28: current_start + 28 + 2])[0]
-                zip_m = unpack("H", self.raw_bytes[current_start + 30: current_start + 30 + 2])[0]
-                zip_k = unpack("H", self.raw_bytes[current_start + 32: current_start + 32 + 2])[0]
+                zip_n = unpack("H", raw_bytes[current_start + 28: current_start + 28 + 2])[0]
+                zip_m = unpack("H", raw_bytes[current_start + 30: current_start + 30 + 2])[0]
+                zip_k = unpack("H", raw_bytes[current_start + 32: current_start + 32 + 2])[0]
 
-                filename = self.raw_bytes[current_start + 46: current_start + 46 + zip_n]
+                filename = raw_bytes[current_start + 46: current_start + 46 + zip_n]
 
                 # check if this is the index file
-                filestart = unpack("I", self.raw_bytes[current_start + 42: current_start + 42 + 4])[0]
-                flags = unpack("H", self.raw_bytes[current_start + 8: current_start + 8 + 2])[0]
-                compressionmethod = unpack("H", self.raw_bytes[current_start + 10: current_start + 10 + 2])[0]
-                mtime = unpack("H", self.raw_bytes[current_start + 12: current_start + 12 + 2])[0]
-                mdate = unpack("H", self.raw_bytes[current_start + 14: current_start + 14 + 2])[0]
-                crc32 = unpack("I", self.raw_bytes[current_start + 16: current_start + 16 + 4])[0]
-                compressedsize = unpack("I", self.raw_bytes[current_start + 20: current_start + 20 + 4])[0]
-                uncompressedsize = unpack("I", self.raw_bytes[current_start + 24: current_start + 24 + 4])[0]
+                filestart = unpack("I", raw_bytes[current_start + 42: current_start + 42 + 4])[0]
+                flags = unpack("H", raw_bytes[current_start + 8: current_start + 8 + 2])[0]
+                compressionmethod = unpack("H", raw_bytes[current_start + 10: current_start + 10 + 2])[0]
+                mtime = unpack("H", raw_bytes[current_start + 12: current_start + 12 + 2])[0]
+                mdate = unpack("H", raw_bytes[current_start + 14: current_start + 14 + 2])[0]
+                crc32 = unpack("I", raw_bytes[current_start + 16: current_start + 16 + 4])[0]
+                compressedsize = unpack("I", raw_bytes[current_start + 20: current_start + 20 + 4])[0]
+                uncompressedsize = unpack("I", raw_bytes[current_start + 24: current_start + 24 + 4])[0]
                 tableItem = {
                     'filename': filename,
                     'compressedsize': compressedsize,
